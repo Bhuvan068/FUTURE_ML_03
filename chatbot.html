@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Customer Chatbot</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        .glass {
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+        .message-bubble {
+            max-width: 80%;
+            word-wrap: break-word;
+        }
+        .typing-indicator span {
+            display: inline-block;
+            width: 4px;
+            height: 4px;
+            background-color: #3b82f6;
+            border-radius: 50%;
+            margin-right: 2px;
+            animation: bounce 1.4s infinite ease-in-out both;
+        }
+        .typing-indicator span:nth-child(1) { animation-delay: -0.32s; }
+        .typing-indicator span:nth-child(2) { animation-delay: -0.16s; }
+        @keyframes bounce {
+            0%, 80%, 100% { transform: scale(0); }
+            40% { transform: scale(1); }
+        }
+        body {
+            background: linear-gradient(135deg, #f0f9ff 0%, #e0f2fe 100%);
+        }
+        .mic-active {
+            animation: pulse-red 1.5s infinite;
+            color: #ef4444 !important;
+        }
+        @keyframes pulse-red {
+            0% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.4); }
+            70% { box-shadow: 0 0 0 10px rgba(239, 68, 68, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
+        }
+    </style>
+</head>
+<body class="h-screen flex items-center justify-center p-4">
+
+    <div class="w-full max-w-2xl h-[90vh] glass rounded-3xl shadow-2xl flex flex-col overflow-hidden border border-white/50">
+        <!-- Header -->
+        <div class="bg-blue-600 p-6 flex items-center justify-between shadow-md">
+            <div class="flex items-center space-x-4">
+                <div class="w-12 h-12 bg-white rounded-full flex items-center justify-center shadow-inner">
+                    <i class="fas fa-robot text-blue-600 text-2xl"></i>
+                </div>
+                <div>
+                    <h1 class="text-white font-bold text-xl tracking-tight">Customer Chatbot</h1>
+                    <div class="flex items-center space-x-1">
+                        <span class="w-2 h-2 bg-green-400 rounded-full"></span>
+                        <p class="text-blue-100 text-xs uppercase font-semibold">Online & Persistent</p>
+                    </div>
+                </div>
+            </div>
+            <div class="flex space-x-2">
+                <button id="clearChat" title="Clear History" class="text-blue-100 hover:text-white transition-colors p-2 rounded-lg hover:bg-blue-500">
+                    <i class="fas fa-trash-alt"></i>
+                </button>
+            </div>
+        </div>
+
+        <!-- Chat Area -->
+        <div id="chatWindow" class="flex-1 overflow-y-auto p-6 space-y-6 scroll-smooth">
+            <!-- Messages load here -->
+        </div>
+
+        <!-- Input Area -->
+        <div class="p-6 bg-white border-t border-gray-100">
+            <form id="chatForm" class="flex items-center space-x-3">
+                <button type="button" id="micBtn" title="Speech to Text"
+                    class="w-12 h-12 rounded-xl flex items-center justify-center text-gray-400 hover:bg-gray-100 transition-all border border-gray-200">
+                    <i class="fas fa-microphone text-xl"></i>
+                </button>
+                <div class="flex-1 relative">
+                    <input type="text" id="userInput" 
+                        class="w-full pl-5 pr-12 py-4 bg-gray-50 border border-gray-200 rounded-2xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all placeholder-gray-400"
+                        placeholder="Type or speak your message..." autocomplete="off">
+                </div>
+                <button type="submit" id="sendBtn"
+                    class="bg-blue-600 hover:bg-blue-700 text-white w-14 h-14 rounded-2xl flex items-center justify-center shadow-lg shadow-blue-200 transition-all active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed">
+                    <i class="fas fa-paper-plane text-xl"></i>
+                </button>
+            </form>
+            <p id="statusText" class="text-[10px] text-gray-400 mt-3 text-center uppercase tracking-widest font-medium">Powered by Gemini 2.5 Flash</p>
+        </div>
+    </div>
+
+    <script>
+        const apiKey = "AIzaSyAsIabm1SoUidPY6iGqTOkfBbenW7GPQ0U"; 
+        const chatWindow = document.getElementById('chatWindow');
+        const chatForm = document.getElementById('chatForm');
+        const userInput = document.getElementById('userInput');
+        const sendBtn = document.getElementById('sendBtn');
+        const clearChatBtn = document.getElementById('clearChat');
+        const micBtn = document.getElementById('micBtn');
+        const statusText = document.getElementById('statusText');
+
+        // --- DATABASE LOGIC (IndexedDB for persistence) ---
+        let db;
+        const request = indexedDB.open("ChatBotDB", 1);
+
+        request.onupgradeneeded = (e) => {
+            db = e.target.result;
+            if (!db.objectStoreNames.contains("messages")) {
+                db.createObjectStore("messages", { keyPath: "id", autoIncrement: true });
+            }
+        };
+
+        request.onsuccess = (e) => {
+            db = e.target.result;
+            loadHistory();
+        };
+
+        function saveMessage(role, text, metadata = null) {
+            const transaction = db.transaction(["messages"], "readwrite");
+            const store = transaction.objectStore("messages");
+            store.add({ role, text, metadata, timestamp: Date.now() });
+        }
+
+        function loadHistory() {
+            const transaction = db.transaction(["messages"], "readonly");
+            const store = transaction.objectStore("messages");
+            const request = store.getAll();
+            request.onsuccess = () => {
+                if (request.result.length === 0) {
+                    appendMessage('model', "Hello! I am your Customer Chatbot. I've been upgraded with Speech-to-Text and a persistent database. How can I help?", null, false);
+                } else {
+                    request.result.forEach(msg => {
+                        appendMessage(msg.role, msg.text, msg.metadata, false);
+                    });
+                }
+            };
+        }
+
+        function clearDatabase() {
+            const transaction = db.transaction(["messages"], "readwrite");
+            const store = transaction.objectStore("messages");
+            store.clear();
+        }
+
+        // --- SPEECH TO TEXT LOGIC ---
+        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+        let recognition;
+
+        if (SpeechRecognition) {
+            recognition = new SpeechRecognition();
+            recognition.continuous = false;
+            recognition.lang = 'en-US';
+            recognition.interimResults = false;
+
+            recognition.onstart = () => {
+                micBtn.classList.add('mic-active');
+                statusText.innerText = "Listening...";
+            };
+
+            recognition.onresult = (event) => {
+                const transcript = event.results[0][0].transcript;
+                userInput.value = transcript;
+                statusText.innerText = "Voice captured!";
+                setTimeout(() => { statusText.innerText = "Powered by Gemini 2.5 Flash"; }, 2000);
+            };
+
+            recognition.onerror = () => {
+                micBtn.classList.remove('mic-active');
+                statusText.innerText = "Speech error. Try typing.";
+            };
+
+            recognition.onend = () => {
+                micBtn.classList.remove('mic-active');
+            };
+
+            micBtn.onclick = () => {
+                try {
+                    recognition.start();
+                } catch (e) {
+                    recognition.stop();
+                }
+            };
+        } else {
+            micBtn.style.display = 'none';
+        }
+
+        // --- CHAT LOGIC ---
+        async function fetchWithRetry(url, options, maxRetries = 5) {
+            let delay = 1000;
+            for (let i = 0; i < maxRetries; i++) {
+                try {
+                    const response = await fetch(url, options);
+                    if (response.ok) return await response.json();
+                    if (response.status !== 429 && response.status < 500) break;
+                } catch (e) {}
+                await new Promise(res => setTimeout(res, delay));
+                delay *= 2;
+            }
+            throw new Error("Failed to connect.");
+        }
+
+        function appendMessage(role, text, metadata = null, shouldSave = true) {
+            const wrapper = document.createElement('div');
+            wrapper.className = `flex ${role === 'user' ? 'justify-end' : 'justify-start'}`;
+            
+            const bubble = document.createElement('div');
+            bubble.className = `message-bubble p-4 rounded-2xl shadow-sm border ${
+                role === 'user' 
+                ? 'bg-blue-600 text-white rounded-tr-none border-blue-500' 
+                : 'glass bg-white text-gray-800 rounded-tl-none border-gray-100'
+            }`;
+            
+            bubble.innerText = text;
+
+            if (metadata && metadata.length > 0) {
+                const sourceContainer = document.createElement('div');
+                sourceContainer.className = "mt-3 pt-3 border-t border-gray-200 text-xs";
+                metadata.forEach(attr => {
+                    const link = document.createElement('a');
+                    link.href = attr.uri;
+                    link.target = "_blank";
+                    link.className = "block text-blue-500 hover:underline truncate mt-1";
+                    link.innerText = attr.title || attr.uri;
+                    sourceContainer.appendChild(link);
+                });
+                bubble.appendChild(sourceContainer);
+            }
+
+            wrapper.appendChild(bubble);
+            chatWindow.appendChild(wrapper);
+            chatWindow.scrollTop = chatWindow.scrollHeight;
+
+            if (shouldSave) saveMessage(role, text, metadata);
+        }
+
+        function showTyping() {
+            const wrapper = document.createElement('div');
+            wrapper.id = 'typingIndicator';
+            wrapper.className = 'flex justify-start';
+            wrapper.innerHTML = `
+                <div class="message-bubble glass bg-white p-4 rounded-2xl rounded-tl-none shadow-sm border border-gray-100 flex items-center space-x-2">
+                    <div class="typing-indicator"><span></span><span></span><span></span></div>
+                    <span class="text-xs text-gray-400 font-medium">Searching for answers...</span>
+                </div>
+            `;
+            chatWindow.appendChild(wrapper);
+            chatWindow.scrollTop = chatWindow.scrollHeight;
+        }
+
+        function hideTyping() {
+            const indicator = document.getElementById('typingIndicator');
+            if (indicator) indicator.remove();
+        }
+
+        async function handleChat(e) {
+            e.preventDefault();
+            const text = userInput.value.trim();
+            if (!text) return;
+
+            userInput.value = '';
+            userInput.disabled = true;
+            sendBtn.disabled = true;
+            appendMessage('user', text);
+            showTyping();
+
+            try {
+                const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
+                const payload = {
+                    contents: [{ parts: [{ text: text }] }],
+                    systemInstruction: {
+                        parts: [{ text: "You are 'Customer Chatbot'. Use Google Search to answer queries." }]
+                    },
+                    tools: [{ "google_search": {} }]
+                };
+
+                const data = await fetchWithRetry(url, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+
+                hideTyping();
+                const responseText = data.candidates?.[0]?.content?.parts?.[0]?.text;
+                const attributions = data.candidates?.[0]?.groundingMetadata?.groundingAttributions?.map(a => ({
+                    uri: a.web?.uri,
+                    title: a.web?.title
+                }));
+
+                if (responseText) {
+                    appendMessage('model', responseText, attributions);
+                }
+            } catch (error) {
+                hideTyping();
+                appendMessage('model', "Connection error. Please try again.");
+            } finally {
+                userInput.disabled = false;
+                sendBtn.disabled = false;
+                userInput.focus();
+            }
+        }
+
+        chatForm.addEventListener('submit', handleChat);
+        clearChatBtn.addEventListener('click', () => {
+            if (confirm("Clear all chat history from the database?")) {
+                clearDatabase();
+                chatWindow.innerHTML = '';
+                appendMessage('model', "History cleared.", null, false);
+            }
+        });
+    </script>
+</body>
+</html>
